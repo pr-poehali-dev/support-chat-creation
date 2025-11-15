@@ -31,11 +31,12 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         params = event.get('queryStringParameters', {}) or {}
         chat_id = params.get('chat_id')
         operator_id = params.get('operator_id')
+        show_archive = params.get('show_archive')
         
         if chat_id:
             cursor.execute("""
                 SELECT c.id, c.client_name, c.client_email, c.status, c.assigned_operator_id, c.created_at,
-                       u.username as operator_name
+                       u.username as operator_name, c.resolution, c.closed_at
                 FROM chats c
                 LEFT JOIN users u ON c.assigned_operator_id = u.id
                 WHERE c.id = %s
@@ -49,6 +50,15 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 ORDER BY created_at ASC
             """, (chat_id,))
             messages = cursor.fetchall()
+            
+            cursor.execute("""
+                SELECT cc.id, cc.comment, cc.created_at, u.username
+                FROM chat_comments cc
+                LEFT JOIN users u ON cc.user_id = u.id
+                WHERE cc.chat_id = %s
+                ORDER BY cc.created_at ASC
+            """, (chat_id,))
+            comments = cursor.fetchall()
             
             cursor.close()
             conn.close()
@@ -68,7 +78,9 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                         'status': chat[3],
                         'assigned_operator_id': chat[4],
                         'created_at': chat[5].isoformat() if chat[5] else None,
-                        'operator_name': chat[6]
+                        'operator_name': chat[6],
+                        'resolution': chat[7],
+                        'closed_at': chat[8].isoformat() if chat[8] else None
                     } if chat else None,
                     'messages': [
                         {
@@ -78,21 +90,36 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                             'message': m[3],
                             'created_at': m[4].isoformat() if m[4] else None
                         } for m in messages
+                    ],
+                    'comments': [
+                        {
+                            'id': co[0],
+                            'comment': co[1],
+                            'created_at': co[2].isoformat() if co[2] else None,
+                            'username': co[3]
+                        } for co in comments
                     ]
                 })
             }
         
         if operator_id:
             cursor.execute("""
-                SELECT id, client_name, client_email, status, assigned_operator_id, created_at
+                SELECT id, client_name, client_email, status, assigned_operator_id, created_at, resolution
                 FROM chats
-                WHERE assigned_operator_id = %s
+                WHERE assigned_operator_id = %s AND status != 'closed'
                 ORDER BY created_at DESC
             """, (operator_id,))
+        elif show_archive == 'true':
+            cursor.execute("""
+                SELECT id, client_name, client_email, status, assigned_operator_id, created_at, resolution
+                FROM chats
+                ORDER BY created_at DESC
+            """)
         else:
             cursor.execute("""
-                SELECT id, client_name, client_email, status, assigned_operator_id, created_at
+                SELECT id, client_name, client_email, status, assigned_operator_id, created_at, resolution
                 FROM chats
+                WHERE status != 'closed'
                 ORDER BY created_at DESC
             """)
         
@@ -115,7 +142,8 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                         'client_email': c[2],
                         'status': c[3],
                         'assigned_operator_id': c[4],
-                        'created_at': c[5].isoformat() if c[5] else None
+                        'created_at': c[5].isoformat() if c[5] else None,
+                        'resolution': c[6]
                     } for c in chats
                 ]
             })
@@ -184,6 +212,56 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 },
                 'isBase64Encoded': False,
                 'body': json.dumps({'success': True, 'message_id': message_id})
+            }
+        
+        if action == 'close_chat':
+            chat_id = body_data.get('chat_id')
+            resolution = body_data.get('resolution', 'resolved')
+            
+            cursor.execute("""
+                UPDATE chats 
+                SET status = 'closed', resolution = %s, closed_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+            """, (resolution, chat_id))
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            return {
+                'statusCode': 200,
+                'headers': {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*'
+                },
+                'isBase64Encoded': False,
+                'body': json.dumps({'success': True})
+            }
+        
+        if action == 'add_comment':
+            chat_id = body_data.get('chat_id')
+            comment = body_data.get('comment')
+            user_id = body_data.get('user_id')
+            
+            cursor.execute("""
+                INSERT INTO chat_comments (chat_id, user_id, comment)
+                VALUES (%s, %s, %s)
+                RETURNING id
+            """, (chat_id, user_id, comment))
+            
+            comment_id = cursor.fetchone()[0]
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            return {
+                'statusCode': 200,
+                'headers': {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*'
+                },
+                'isBase64Encoded': False,
+                'body': json.dumps({'success': True, 'comment_id': comment_id})
             }
     
     cursor.close()
