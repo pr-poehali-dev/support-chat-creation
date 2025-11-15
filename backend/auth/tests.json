@@ -1,0 +1,22 @@
+{
+  "tests": [
+    {
+      "name": "Login super admin",
+      "method": "POST",
+      "path": "/",
+      "body": {
+        "username": "123",
+        "password": "123"
+      },
+      "expectedStatus": 200,
+      "expectedBody": {
+        "success": true,
+        "user": {
+          "username": "string",
+          "role": "string"
+        }
+      },
+      "bodyMatcher": "partial"
+    }
+  ]
+}
